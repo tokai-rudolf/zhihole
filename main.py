@@ -35,12 +35,12 @@ def refresh_tasks(con):
 
         url = f"https://www.zhihu.com/api/v3/account/api/login/qrcode/{task.token}/scan_info"
         res = requests.get(url, cookies=task.cookies)
-        task.cookies = res.cookies
+        task.cookies.update(res.cookies)
         if 'status' not in res.json() or res.json()['status'] != 0:
             uid = res.json()['uid']
             print(f'Login success, uid: {uid}')
             requests.post('https://www.zhihu.com/api/account/prod/token/refresh', '', cookies=task.cookies)
-            task.cookies = res.cookies
+            task.cookies.update(res.cookies)
             # save cookies
             with open(f'cookies/{uid}.txt', 'w') as f:
                 f.write(str(task.cookies.get_dict()))
@@ -50,14 +50,15 @@ def refresh_tasks(con):
             task.expire_at = current_milli_time() + 100*1000
             task.success = True
         elif task.expire_at < current_milli_time():
-            login_tasks.remove(task)
+            login_tasks -= task.token
 
 
 def get_random_account():
+    con = sqlite3.connect('accounts.db')
     uid = con.execute('SELECT uid FROM accounts ORDER BY last_used LIMIT 1').fetchone()[0]
     cookies = con.execute('SELECT cookies FROM accounts WHERE uid=?', (uid,)).fetchone()[0]
     con.execute('UPDATE accounts SET last_used=? WHERE uid=?', (current_milli_time(), uid))
-    return uid, json.loads(cookies)
+    return uid, json.loads(cookies), con
 
 
 def generate_payload(ans: str):
@@ -104,7 +105,7 @@ def local_login_qr():
     while True:
         url = f"https://www.zhihu.com/api/v3/account/api/login/qrcode/{token}/scan_info"
         res = requests.get(url, cookies=cookies)
-        cookies = res.cookies
+        cookies.update(res.cookies)
         json: dict = res.json()
         if 'status' in json and json['status'] == 0:
             pass
@@ -112,7 +113,7 @@ def local_login_qr():
             uid = json['uid']
             print(f'Login success, uid: {uid}')
             requests.post('https://www.zhihu.com/api/account/prod/token/refresh', '', cookies=cookies)
-            cookies = res.cookies
+            cookies.update(res.cookies)
             # save cookies
             with open(f'cookies/{uid}.txt', 'w') as f:
                 f.write(str(cookies.get_dict()))
@@ -120,19 +121,18 @@ def local_login_qr():
 
 
 def get_qr_token():
-    cookies = {}
-    res = requests.get('https://www.zhihu.com/signin', cookies=cookies)
+    res = requests.get('https://www.zhihu.com/signin')
     cookies = res.cookies
     print(cookies)
     res = requests.post('https://www.zhihu.com/udid')
-    cookies = res.cookies
+    cookies.update(res.cookies)
     print(cookies)
     print(res.text)
     res = requests.post('https://www.zhihu.com/api/v3/account/api/login/qrcode', cookies=cookies, headers={
         "X-Requested-With": "fetch",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     })
-    cookies = res.cookies
+    cookies.update(res.cookies)
     print(cookies)
     print(res.request.headers)
     print(res.json())
@@ -150,7 +150,7 @@ def hello_world():
     <body><h1>知乎树洞 - 匿名化社区</h1>
     <p><a href="/share">共享您的账号用于树洞服务</a>或者<a href="/post">使用其他人的账号发布匿名回答</a></p>
     <p>树洞服务可以帮助您使用账号池内的账号隐藏真实身份和真实ip，虽然不能发布匿名回答，但是可以保证你的个人信息安全，没有人可以得知你的身份。暂不支持评论回复等功能。</p>
-    <p>树洞服务是一个开源项目，你可以在<a href="">Github</a>上查看源代码，欢迎提交PR。</p>
+    <p>树洞服务是一个开源项目，你可以在<a href="https://github.com/tokai-rudolf/zhihole">Github</a>上查看源代码，欢迎提交PR。</p>
     </body></html>"""
 
 
@@ -204,16 +204,16 @@ def post():
     </body></html>"""
 
 
-def update_account(uid, cookies):
+def update_account(con, uid, cookies):
     con.execute('update accounts set cookies=? where uid=?', [json.dumps(cookies.get_dict()), uid])
     con.commit()
 
 
 @app.get('/post/<qid>')
 def post_with_qid(qid):
-    [uid, cookies] = get_random_account()
+    [uid, cookies, con] = get_random_account()
     res = requests.get(f'https://www.zhihu.com/question/{qid}', cookies=cookies)
-    update_account(uid, res.cookies)
+    update_account(con, uid, res.cookies)
     html = res.text
     print(html)
     str = "<meta itemProp=\"name\" content=\""
@@ -247,6 +247,11 @@ def post_with_qid(qid):
     </body></html>"""
 
 
+@app.post('/post/<qid>')
+def post_answer():
+    return "ok"
+
+
 @app.get('/status')
 def status():
     return {
@@ -266,4 +271,4 @@ if __name__ == '__main__':
 
     threading.Thread(target=do_refresh).start()
     con.execute('CREATE TABLE IF NOT EXISTS accounts (uid TEXT, cookies TEXT, last_used INTEGER)')
-    app.run(port=8080)
+    app.run(port=8000)
